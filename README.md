@@ -16,7 +16,7 @@ Reusable Helm chart for deploying a Counter-Strike 2 dedicated server on Kuberne
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `image.repository` | Docker image | `ghcr.io/joedwards32/cs2` |
+| `image.repository` | Docker image | `ghcr.io/kus/cs2-modded-server` |
 | `image.tag` | Image tag | `latest` |
 | `service.type` | Service type | `LoadBalancer` |
 | `service.port` | Game port (TCP/UDP) | `27015` |
