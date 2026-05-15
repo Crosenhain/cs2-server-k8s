@@ -1,0 +1,28 @@
+---
+namespace: cs2
+image:
+  repository: ghcr.io/kus/cs2-modded-server
+  pullPolicy: Always
+  tag: latest
+service:
+  type: LoadBalancer
+  port: 27015
+secrets:
+  existingSecret: my-pre-created-secret
+  # steamAccount: ""
+  # apiKey: ""
+  # rconPassword: ""
+  # serverPassword: ""
+persistence:
+  dataHostPath: /path/to/local/data-cs2/game/
+  customHostPath: /path/to/local/data-cs2/custom_files/
+nodeSelector:
+  kubernetes.io/hostname: servername
+env:
+  exec: on_boot.cfg
+watcher:
+  enabled: true
+  schedule: '*/15 * * * *'
+  image:
+    repository: ghcr.io/kus/cs2-modded-server
+    tag: latest

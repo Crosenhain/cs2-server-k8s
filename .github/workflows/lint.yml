@@ -1,0 +1,23 @@
+name: Helm Lint
+
+on:
+  pull_request:
+    paths:
+      - 'templates/**'
+      - 'values.yaml'
+      - 'Chart.yaml'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.12.0
+
+      - name: Helm Lint
+        run: helm lint .

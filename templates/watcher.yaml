@@ -1,0 +1,97 @@
+---
+{{- if .Values.watcher.enabled -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{include "cs2-server.fullname" .}}-watcher
+  labels:
+    {{- include "cs2-server.labels" . | nindent 4}}
+  namespace: {{.Values.namespace}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{include "cs2-server.fullname" .}}-watcher-role
+  labels:
+    {{- include "cs2-server.labels" . | nindent 4}}
+  namespace: {{.Values.namespace}}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: [{{include "cs2-server.fullname" . | quote}}]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{include "cs2-server.fullname" .}}-watcher-binding
+  labels:
+    {{- include "cs2-server.labels" . | nindent 4}}
+  namespace: {{.Values.namespace}}
+subjects:
+  - kind: ServiceAccount
+    name: {{include "cs2-server.fullname" .}}-watcher
+    namespace: {{.Release.Namespace}}
+roleRef:
+  kind: Role
+  name: {{include "cs2-server.fullname" .}}-watcher-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{include "cs2-server.fullname" .}}-watcher-script
+  labels:
+    {{- include "cs2-server.labels" . | nindent 4}}
+  namespace: {{.Values.namespace}}
+data:
+  watcher.sh: |
+{{.Files.Get "scripts/watcher.sh" | indent 4 | replace "cs2-service" (include "cs2-server.fullname" .) | replace "__NAMESPACE__" .Release.Namespace | replace "__DEPLOYMENT__" (include "cs2-server.fullname" .)}}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{include "cs2-server.fullname" .}}-watcher
+  labels:
+    {{- include "cs2-server.labels" . | nindent 4}}
+  namespace: {{.Values.namespace}}
+spec:
+  schedule: {{.Values.watcher.schedule | quote}}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: {{include "cs2-server.fullname" .}}-watcher
+          restartPolicy: OnFailure
+          {{- with .Values.nodeSelector}}
+          nodeSelector:
+            {{- toYaml . | nindent 12}}
+          {{- end}}
+          containers:
+            - name: watcher
+              image: "{{.Values.watcher.image.repository}}:{{.Values.watcher.image.tag | default .Chart.AppVersion}}"
+              command: ["/bin/bash", "/scripts/watcher.sh"]
+              env:
+                - name: CS2_RCONPW
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{.Values.secrets.existingSecret
+                        | default (printf "%s-secret" (
+                        include "cs2-server.fullname" .))}}
+                      key: RCON_PASSWORD
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                - name: cs2-data
+                  mountPath: /home/steam/cs2
+                  readOnly: true
+          volumes:
+            - name: scripts
+              configMap:
+                name: {{include "cs2-server.fullname" .}}-watcher-script
+            - name: cs2-data
+              hostPath:
+                path: {{.Values.persistence.dataHostPath}}
+                type: Directory
+{{- end}}

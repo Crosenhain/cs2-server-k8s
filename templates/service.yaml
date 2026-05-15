@@ -1,0 +1,21 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{include "cs2-server.fullname" .}}
+  labels:
+    {{- include "cs2-server.labels" . | nindent 4}}
+  namespace: {{.Values.namespace}}
+spec:
+  type: {{.Values.service.type}}
+  ports:
+    - name: tcp-{{.Values.service.port}}
+      protocol: TCP
+      port: {{.Values.service.port}}
+      targetPort: {{.Values.service.port}}
+    - name: udp-{{.Values.service.port}}
+      protocol: UDP
+      port: {{.Values.service.port}}
+      targetPort: {{.Values.service.port}}
+  selector:
+    {{- include "cs2-server.selectorLabels" . | nindent 4}}

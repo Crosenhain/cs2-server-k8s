@@ -1,0 +1,90 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{include "cs2-server.fullname" .}}
+  labels:
+    {{- include "cs2-server.labels" . | nindent 4}}
+  namespace: {{.Values.namespace}}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "cs2-server.selectorLabels" . | nindent 6}}
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "cs2-server.selectorLabels" . | nindent 8}}
+    spec:
+      {{- with .Values.nodeSelector}}
+      nodeSelector:
+        {{- toYaml . | nindent 8}}
+      {{- end}}
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: {{.Chart.Name}}
+          image: "{{.Values.image.repository}}:{{.Values.image.tag
+            | default .Chart.AppVersion}}"
+          imagePullPolicy: {{.Values.image.pullPolicy}}
+          ports:
+            - containerPort: {{.Values.service.port}}
+              protocol: TCP
+            - containerPort: {{.Values.service.port}}
+              protocol: UDP
+          env:
+            - name: STEAM_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: {{.Values.secrets.existingSecret
+                    | default (printf "%s-secret" (
+                    include "cs2-server.fullname" .))}}
+                  key: STEAM_ACCOUNT
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{.Values.secrets.existingSecret
+                    | default (printf "%s-secret" (
+                    include "cs2-server.fullname" .))}}
+                  key: API_KEY
+            - name: RCON_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{.Values.secrets.existingSecret
+                   | default (printf "%s-secret" (
+                   include "cs2-server.fullname" .))}}
+                  key: RCON_PASSWORD
+            - name: SERVER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{.Values.secrets.existingSecret
+                    | default (printf "%s-secret" (
+                    include "cs2-server.fullname" .))}}
+                  key: SERVER_PASSWORD
+            - name: EXEC
+              value: {{.Values.env.exec | quote}}
+            - name: PORT
+              value: {{.Values.service.port | quote}}
+          volumeMounts:
+            - name: cs2-data
+              mountPath: /home/steam/cs2
+            - name: custom
+              mountPath: /home/custom_files/
+            - name: install-script
+              mountPath: /home/cs2-modded-server/install_docker.sh
+              subPath: install_docker.sh
+      volumes:
+        - name: cs2-data
+          hostPath:
+            path: {{.Values.persistence.dataHostPath}}
+            type: Directory
+        - name: custom
+          hostPath:
+            path: {{.Values.persistence.customHostPath}}
+            type: Directory
+        - name: install-script
+          configMap:
+            name: {{include "cs2-server.fullname" .}}-install-script
+            defaultMode: 0755
