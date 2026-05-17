@@ -34,6 +34,11 @@ else
     IP_ARGS="-ip ${IP}"
 fi
 
+if [[ -z $CS2_WORKSHOP_COLLECTION]]; then
+    WORKSHOP_COLLECTION=+"+host_workshop_collection ${CS2_WORKSHOP_COLLECTION}"
+fi
+
+
 if [ -f /etc/os-release ]; then
     # freedesktop.org and systemd
     . /etc/os-release
@@ -176,6 +181,7 @@ echo ./game/bin/linuxsteamrt64/cs2 \
     +sv_lan "$LAN" \
     +sv_password "$SERVER_PASSWORD" \
     +rcon_password "$RCON_PASSWORD" \
+    "${WORKSHOP_COLLECTION}" \
     +exec "$EXEC"
 sudo -u $user ./game/bin/linuxsteamrt64/cs2 \
     -dedicated \
@@ -196,5 +202,6 @@ sudo -u $user ./game/bin/linuxsteamrt64/cs2 \
     +sv_lan "$LAN" \
     +sv_password "$SERVER_PASSWORD" \
     +rcon_password "$RCON_PASSWORD" \
+    "${WORKSHOP_COLLECTION}"
     +exec "$EXEC"
 

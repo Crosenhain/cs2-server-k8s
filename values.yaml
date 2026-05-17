@@ -33,6 +33,7 @@ env:
   gameMode: 0
   mapGroup: mg_active
   lan: 0
+  #workshopCollection: 1234
 watcher:
   enabled: true
   schedule: '*/15 * * * *'
