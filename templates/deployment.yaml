@@ -63,10 +63,48 @@ spec:
                     | default (printf "%s-secret" (
                     include "cs2-server.fullname" .))}}
                   key: SERVER_PASSWORD
+            - name: DUCK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{.Values.secrets.existingSecret
+                    | default (printf "%s-secret" (
+                    include "cs2-server.fullname" .))}}
+                  key: DUCK_TOKEN
+                  optional: true
+            - name: DUCK_DOMAIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{.Values.secrets.existingSecret
+                    | default (printf "%s-secret" (
+                    include "cs2-server.fullname" .))}}
+                  key: DUCK_DOMAIN
+                  optional: true
             - name: EXEC
               value: {{.Values.env.exec | quote}}
             - name: PORT
               value: {{.Values.service.port | quote}}
+            - name: MOD_BRANCH
+              value: {{.Values.env.modBranch | quote}}
+            - name: CUSTOM_FOLDER
+              value: {{.Values.env.customFolder | quote}}
+            - name: BITS
+              value: {{.Values.env.bits | quote}}
+            - name: IP
+              value: {{.Values.env.ip | quote}}
+            - name: TICKRATE
+              value: {{.Values.env.tickrate | quote}}
+            - name: MAP
+              value: {{.Values.env.map | quote}}
+            - name: MAXPLAYERS
+              value: {{.Values.env.maxPlayers | quote}}
+            - name: GAME_TYPE
+              value: {{.Values.env.gameType | quote}}
+            - name: GAME_MODE
+              value: {{.Values.env.gameMode | quote}}
+            - name: MAP_GROUP
+              value: {{.Values.env.mapGroup | quote}}
+            - name: LAN
+              value: {{.Values.env.lan | quote}}
           volumeMounts:
             - name: cs2-data
               mountPath: /home/steam/cs2
