@@ -34,7 +34,7 @@ else
     IP_ARGS="-ip ${IP}"
 fi
 
-if [[ -z $CS2_WORKSHOP_COLLECTION]]; then
+if [[ $CS2_WORKSHOP_COLLECTION ]]; then
     WORKSHOP_COLLECTION=+"+host_workshop_collection ${CS2_WORKSHOP_COLLECTION}"
 fi
 
