@@ -105,7 +105,7 @@ spec:
               value: {{.Values.env.mapGroup | quote}}
             - name: LAN
               value: {{.Values.env.lan | quote}}
-            - name: WORKSHOP_COLLECTION
+            - name: CS2_WORKSHOP_COLLECTION
               value: {{.Values.env.workshopCollection | quote}}
           volumeMounts:
             - name: cs2-data
