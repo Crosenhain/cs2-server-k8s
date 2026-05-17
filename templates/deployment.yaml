@@ -107,7 +107,6 @@ spec:
               value: {{.Values.env.lan | quote}}
             - name: WORKSHOP_COLLECTION
               value: {{.Values.env.workshopCollection | quote}}
-              optional: true
           volumeMounts:
             - name: cs2-data
               mountPath: /home/steam/cs2
