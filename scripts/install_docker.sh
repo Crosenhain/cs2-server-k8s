@@ -35,7 +35,7 @@ else
 fi
 
 if [[ $CS2_WORKSHOP_COLLECTION ]]; then
-    WORKSHOP_COLLECTION="+host_workshop_collection ${CS2_WORKSHOP_COLLECTION} +host_workshop_map \"\""
+    WORKSHOP_COLLECTION="+host_workshop_collection \"${CS2_WORKSHOP_COLLECTION}\" +host_workshop_map \"\""
 fi
 
 
