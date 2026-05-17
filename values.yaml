@@ -21,19 +21,19 @@ persistence:
 nodeSelector:
   kubernetes.io/hostname: servername
 env:
-  exec: on_boot.cfg
-  modBranch: master
-  customFolder: custom_files
+  exec: "on_boot.cfg"
+  modBranch: "master"
+  customFolder: "custom_files"
   bits: 64
   ip: ""
   tickrate: 128
-  map: de_dust2
+  map: "de_dust2"
   maxPlayers: 14
   gameType: 0
   gameMode: 0
-  mapGroup: mg_active
+  mapGroup: "mg_active"
   lan: 0
-  workshopCollection: 1234
+  workshopCollection: "1234"
 watcher:
   enabled: true
   schedule: '*/15 * * * *'
