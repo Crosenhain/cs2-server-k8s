@@ -80,6 +80,8 @@ spec:
                         | default (printf "%s-secret" (
                         include "cs2-server.fullname" .))}}
                       key: RCON_PASSWORD
+                - name: CS2_PORT
+                  value: {{.Values.service.port | quote}}
               volumeMounts:
                 - name: scripts
                   mountPath: /scripts
