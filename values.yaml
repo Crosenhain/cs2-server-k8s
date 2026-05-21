@@ -22,7 +22,7 @@ nodeSelector:
   kubernetes.io/hostname: servername
 env:
   exec: "on_boot.cfg"
-  modBranch: "master"
+  modBranch: "main"
   customFolder: "custom_files"
   bits: 64
   ip: ""
