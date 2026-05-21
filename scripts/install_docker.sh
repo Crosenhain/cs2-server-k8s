@@ -2,7 +2,7 @@
 
 # Variables
 user="steam"
-BRANCH="master"
+BRANCH="main"
 
 # Check if MOD_BRANCH is set and not empty
 if [ -n "$MOD_BRANCH" ]; then
