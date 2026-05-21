@@ -119,8 +119,8 @@ chown -R ${user}:${user} /home/${user}
 # Add steamcmd to PATH for -autoupdate to work
 export PATH=$PATH:/steamcmd
 
-echo "Removing appmanifest_730.acf in case it is corrupt"
-rm -f /home/steam/cs2/steamapps/appmanifest_730.acf
+# echo "Removing appmanifest_730.acf in case it is corrupt"
+# rm -f /home/steam/cs2/steamapps/appmanifest_730.acf
 
 echo "Downloading any updates for CS2..."
 # https://developer.valvesoftware.com/wiki/Command_line_options
