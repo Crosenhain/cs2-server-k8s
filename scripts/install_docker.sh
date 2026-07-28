@@ -34,9 +34,8 @@ else
     IP_ARGS="-ip ${IP}"
 fi
 
-if [[ $CS2_WORKSHOP_COLLECTION ]]; then
-    WORKSHOP_COLLECTION="+host_workshop_collection ${CS2_WORKSHOP_COLLECTION} +host_workshop_map 3134466699"
-fi
+# Workshop collection -> mapgroup generation happens later (after the CS2 base
+# download creates the game dir). See the "Workshop collection" block below.
 
 
 if [ -f /etc/os-release ]; then
@@ -158,50 +157,137 @@ cp -RT /home/custom_files/ /home/${user}/cs2/game/csgo/
 
 chown -R ${user}:${user} /home/${user}
 
+# --- Workshop collection -> mapgroup generation --------------------------------
+# The CS2 end-of-match "vote next map" screen is populated from the ACTIVE
+# mapgroup's "maps" list in gamemodes_server.txt, NOT from the downloaded
+# workshop collection. So when a collection is set we resolve its member maps,
+# pre-download them to read their .bsp names, and write a gamemodes_server.txt
+# mapgroup listing them as workshop/<id>/<bsp> entries. This mapgroup is then
+# the source of truth for the vote; +host_workshop_collection is kept only to
+# keep the engine subscription current.
+WORKSHOP_ARGS=()
+GEN_MAP_GROUP=""
+GEN_MAP=""
+
+if [[ -n "$CS2_WORKSHOP_COLLECTION" ]]; then
+    MAPGROUP_NAME="${MAPGROUP_NAME:-mg_workshop}"
+    echo "Resolving workshop collection ${CS2_WORKSHOP_COLLECTION} -> map ids..."
+
+    COLLECTION_JSON=$(curl -s \
+        "https://api.steampowered.com/ISteamRemoteStorage/GetCollectionDetails/v1/" \
+        -d collectioncount=1 \
+        -d "publishedfileids[0]=${CS2_WORKSHOP_COLLECTION}")
+
+    # Extract child publishedfileids (jq -> python3 -> grep fallback)
+    if command -v jq >/dev/null 2>&1; then
+        MAP_IDS=$(echo "$COLLECTION_JSON" | jq -r \
+            '.response.collectiondetails[0].children[]?.publishedfileid')
+    elif command -v python3 >/dev/null 2>&1; then
+        MAP_IDS=$(echo "$COLLECTION_JSON" | python3 -c \
+            'import sys,json;d=json.load(sys.stdin);print("\n".join(c["publishedfileid"] for c in d["response"]["collectiondetails"][0].get("children",[])))')
+    else
+        # Fallback: first "publishedfileid" is the collection itself, drop it.
+        MAP_IDS=$(echo "$COLLECTION_JSON" | grep -o '"publishedfileid":"[0-9]*"' \
+            | grep -o '[0-9]*' | tail -n +2)
+    fi
+
+    if [[ -z "$MAP_IDS" ]]; then
+        echo "WARNING: could not resolve collection ${CS2_WORKSHOP_COLLECTION}; falling back to MAP_GROUP='${MAP_GROUP-mg_active}'"
+    else
+        # Pre-download each member so its .bsp is on disk for name derivation
+        # (the engine otherwise only fetches at runtime, too late for config-gen).
+        DL_ARGS=(+force_install_dir "/home/${user}/cs2" +login anonymous)
+        for id in $MAP_IDS; do
+            DL_ARGS+=(+workshop_download_item 730 "$id")
+        done
+        DL_ARGS+=(+quit)
+        echo "Downloading ${CS2_WORKSHOP_COLLECTION} member maps..."
+        sudo -u "$user" /steamcmd/steamcmd.sh "${DL_ARGS[@]}"
+
+        GM_FILE="/home/${user}/cs2/game/csgo/gamemodes_server.txt"
+        ENTRIES=""
+        for id in $MAP_IDS; do
+            bsp=$(basename "$(ls /home/${user}/cs2/steamapps/workshop/content/730/${id}/*.bsp 2>/dev/null | head -n1)" .bsp 2>/dev/null)
+            if [[ -z "$bsp" ]]; then
+                echo "WARNING: no .bsp found for workshop item ${id}; skipping"
+                continue
+            fi
+            ENTRIES+=$'\t\t\t\t"'"workshop/${id}/${bsp}"$'"\t\t""\n'
+            [[ -z "$GEN_MAP" ]] && GEN_MAP="workshop/${id}/${bsp}"
+        done
+
+        if [[ -z "$ENTRIES" ]]; then
+            echo "WARNING: no workshop maps resolved to .bsp; falling back to MAP_GROUP='${MAP_GROUP-mg_active}'"
+        else
+            cat > "$GM_FILE" <<EOF
+"GameModes.txt"
+{
+	"mapgroups"
+	{
+		"${MAPGROUP_NAME}"
+		{
+			"name"		"${MAPGROUP_NAME}"
+			"maps"
+			{
+${ENTRIES}			}
+		}
+	}
+}
+EOF
+            chown ${user}:${user} "$GM_FILE"
+            GEN_MAP_GROUP="$MAPGROUP_NAME"
+            echo "Wrote ${GM_FILE} with mapgroup ${MAPGROUP_NAME}"
+            # Bug A fix: separate argv tokens, not one quoted string.
+            WORKSHOP_ARGS=(+host_workshop_collection "$CS2_WORKSHOP_COLLECTION")
+            # Bug B fix: derived/optional start map, not a hardcoded id.
+            if [[ -n "$WORKSHOP_START_MAP" ]]; then
+                WORKSHOP_ARGS+=(+host_workshop_map "$WORKSHOP_START_MAP")
+            fi
+        fi
+    fi
+fi
+
+# Generated mapgroup wins; otherwise fall back to the env-provided mapgroup.
+EFFECTIVE_MAP_GROUP="${GEN_MAP_GROUP:-${MAP_GROUP-mg_active}}"
+# Boot map: an explicit workshop/<id>/<bsp> in MAP pins the start map; else the
+# first resolved collection member; else the env MAP; else de_dust2.
+if [[ "$MAP" == workshop/* ]]; then
+    EFFECTIVE_MAP="$MAP"
+else
+    EFFECTIVE_MAP="${GEN_MAP:-${MAP-de_dust2}}"
+fi
+# --- end workshop generation ---------------------------------------------------
+
 cd /home/${user}/cs2 || exit
 
 echo "Starting server on $PUBLIC_IP:$PORT"
 # https://developer.valvesoftware.com/wiki/Counter-Strike_2/Dedicated_Servers#Command-Line_Parameters
-echo ./game/bin/linuxsteamrt64/cs2 \
-    -dedicated \
-    -console \
-    -usercon \
-    -disable_workshop_command_filtering \
-    -autoupdate \
-    -tickrate "$TICKRATE" \
-    "$IP_ARGS" \
-    -port "$PORT" \
-    +map "${MAP-de_dust2}" \
-    +sv_visiblemaxplayers "$MAXPLAYERS" \
-    -authkey "$API_KEY" \
-    +sv_setsteamaccount "$STEAM_ACCOUNT" \
-    +game_type "${GAME_TYPE-0}" \
-    +game_mode "${GAME_MODE-0}" \
-    +mapgroup "${MAP_GROUP-mg_active}" \
-    +sv_lan "$LAN" \
-    +sv_password "$SERVER_PASSWORD" \
-    +rcon_password "$RCON_PASSWORD" \
-    "${WORKSHOP_COLLECTION}" \
+CS2_ARGS=(
+    -dedicated
+    -console
+    -usercon
+    -disable_workshop_command_filtering
+    -autoupdate
+    -tickrate "$TICKRATE"
+)
+# $IP_ARGS is "-ip <addr>" or empty; append unquoted so it splits into tokens.
+[[ -n "$IP_ARGS" ]] && CS2_ARGS+=($IP_ARGS)
+CS2_ARGS+=(
+    -port "$PORT"
+    +map "$EFFECTIVE_MAP"
+    +sv_visiblemaxplayers "$MAXPLAYERS"
+    -authkey "$API_KEY"
+    +sv_setsteamaccount "$STEAM_ACCOUNT"
+    +game_type "${GAME_TYPE-0}"
+    +game_mode "${GAME_MODE-0}"
+    +mapgroup "$EFFECTIVE_MAP_GROUP"
+    +sv_lan "$LAN"
+    +sv_password "$SERVER_PASSWORD"
+    +rcon_password "$RCON_PASSWORD"
+    "${WORKSHOP_ARGS[@]}"
     +exec "$EXEC"
-sudo -u $user ./game/bin/linuxsteamrt64/cs2 \
-    -dedicated \
-    -console \
-    -usercon \
-    -disable_workshop_command_filtering \
-    -autoupdate \
-    -tickrate "$TICKRATE" \
-    "$IP_ARGS" \
-    -port "$PORT" \
-    +map "${MAP-de_dust2}" \
-    +sv_visiblemaxplayers "$MAXPLAYERS" \
-    -authkey "$API_KEY" \
-    +sv_setsteamaccount "$STEAM_ACCOUNT" \
-    +game_type "${GAME_TYPE-0}" \
-    +game_mode "${GAME_MODE-0}" \
-    +mapgroup "${MAP_GROUP-mg_active}" \
-    +sv_lan "$LAN" \
-    +sv_password "$SERVER_PASSWORD" \
-    +rcon_password "$RCON_PASSWORD" \
-    "${WORKSHOP_COLLECTION}"
-    +exec "$EXEC"
+)
+
+echo ./game/bin/linuxsteamrt64/cs2 "${CS2_ARGS[@]}"
+sudo -u $user ./game/bin/linuxsteamrt64/cs2 "${CS2_ARGS[@]}"
 

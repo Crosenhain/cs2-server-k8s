@@ -107,6 +107,10 @@ spec:
               value: {{.Values.env.lan | quote}}
             - name: CS2_WORKSHOP_COLLECTION
               value: {{.Values.env.workshopCollection | quote}}
+            - name: MAPGROUP_NAME
+              value: {{.Values.env.mapgroupName | default "mg_workshop" | quote}}
+            - name: WORKSHOP_START_MAP
+              value: {{.Values.env.workshopStartMap | default "" | quote}}
           volumeMounts:
             - name: cs2-data
               mountPath: /home/steam/cs2

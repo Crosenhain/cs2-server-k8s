@@ -34,6 +34,12 @@ env:
   mapGroup: "mg_active"
   lan: 0
   workshopCollection: "1234"
+  # When workshopCollection is set, the entrypoint resolves it to member maps,
+  # writes csgo/gamemodes_server.txt, and launches with +mapgroup mapgroupName
+  # (overrides mapGroup above). This is what puts workshop maps in the
+  # end-of-match vote. Leave workshopStartMap empty to boot the first member.
+  mapgroupName: "mg_workshop"
+  workshopStartMap: ""
 watcher:
   enabled: true
   schedule: '*/15 * * * *'
