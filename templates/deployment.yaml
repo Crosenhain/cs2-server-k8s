@@ -111,6 +111,10 @@ spec:
               value: {{.Values.env.mapgroupName | default "mg_workshop" | quote}}
             - name: WORKSHOP_START_MAP
               value: {{.Values.env.workshopStartMap | default "" | quote}}
+            - name: REMOVE_APP_MANIFEST_ON_START
+              value: {{.Values.env.removeAppmanifestOnStart | default "false" | quote}}
+            - name: VALIDATE_ON_START
+              value: {{.Values.env.performValidationOnStart | default "false" | quote}}
           volumeMounts:
             - name: cs2-data
               mountPath: /home/steam/cs2

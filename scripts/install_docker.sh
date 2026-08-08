@@ -118,8 +118,16 @@ chown -R ${user}:${user} /home/${user}
 # Add steamcmd to PATH for -autoupdate to work
 export PATH=$PATH:/steamcmd
 
-echo "Removing appmanifest_730.acf in case it is corrupt"
-rm -f /home/steam/cs2/steamapps/appmanifest_730.acf
+if $REMOVE_APP_MANIFEST_ON_START; then 
+    echo "Removing appmanifest_730.acf in case it is corrupt"
+    rm -f /home/steam/cs2/steamapps/appmanifest_730.acf
+fi
+
+if $VALIDATE_ON_START; then
+    APP_UPDATE="+app_update 730 validate"
+else
+    APP_UPDATE="+app_update 730"
+fi
 
 echo "Downloading any updates for CS2..."
 # https://developer.valvesoftware.com/wiki/Command_line_options
@@ -129,7 +137,7 @@ sudo -u $user /steamcmd/steamcmd.sh \
     +@sSteamCmdForcePlatformBitness "$BITS" \
     +force_install_dir /home/${user}/cs2 \
     +login anonymous \
-    +app_update 730 \
+    $APP_UPDATE \
     +quit
 
 cd /home/${user} || exit
