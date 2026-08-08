@@ -40,6 +40,8 @@ env:
   # end-of-match vote. Leave workshopStartMap empty to boot the first member.
   mapgroupName: "mg_workshop"
   workshopStartMap: ""
+  removeAppmanifestOnStart: false
+  performValidationOnStart: false
 watcher:
   enabled: true
   schedule: '*/15 * * * *'
