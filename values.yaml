@@ -7,6 +7,11 @@ image:
 service:
   type: LoadBalancer
   port: 27015
+  # Bind the game port directly on the node the pod runs on. Preserves real
+  # client IPs, which k3s ServiceLB (klipper) masquerades away. hostPort always
+  # mirrors service.port so the port advertised to Steam matches the reachable
+  # one. Set service.type: ClusterIP alongside this.
+  hostPort: false
 secrets:
   existingSecret: my-pre-created-secret
   # steamAccount: ""

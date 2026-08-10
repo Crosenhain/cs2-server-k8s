@@ -32,8 +32,14 @@ spec:
           ports:
             - containerPort: {{.Values.service.port}}
               protocol: TCP
+              {{- if .Values.service.hostPort}}
+              hostPort: {{.Values.service.port}}
+              {{- end}}
             - containerPort: {{.Values.service.port}}
               protocol: UDP
+              {{- if .Values.service.hostPort}}
+              hostPort: {{.Values.service.port}}
+              {{- end}}
           env:
             - name: STEAM_ACCOUNT
               valueFrom:
