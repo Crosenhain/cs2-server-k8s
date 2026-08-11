@@ -1,5 +1,5 @@
 ---
-{{- if .Values.watcher.enabled -}}
+{{- if .Values.watcher.enabled }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
