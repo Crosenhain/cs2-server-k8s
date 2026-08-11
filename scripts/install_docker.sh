@@ -118,27 +118,79 @@ chown -R ${user}:${user} /home/${user}
 # Add steamcmd to PATH for -autoupdate to work
 export PATH=$PATH:/steamcmd
 
-if $REMOVE_APP_MANIFEST_ON_START; then 
-    echo "Removing appmanifest_730.acf in case it is corrupt"
-    rm -f /home/steam/cs2/steamapps/appmanifest_730.acf
-fi
+MANIFEST="/home/${user}/cs2/steamapps/appmanifest_730.acf"
 
-if $VALIDATE_ON_START; then
-    APP_UPDATE="+app_update 730 validate"
-else
-    APP_UPDATE="+app_update 730"
+# Read a numeric field out of the Steam appmanifest (KeyValues, tab separated).
+acf_field() {
+    grep -oP "\"$1\"\s+\"\K[0-9]+" "$MANIFEST" 2>/dev/null | head -n 1
+}
+
+acf_state() {
+    echo "StateFlags=$(acf_field StateFlags) buildid=$(acf_field buildid) TargetBuildID=$(acf_field TargetBuildID)"
+}
+
+# $1 is "validate" or empty.
+# https://developer.valvesoftware.com/wiki/Command_line_options
+run_app_update() {
+    sudo -u $user /steamcmd/steamcmd.sh \
+        +api_logging 1 1 \
+        +@sSteamCmdForcePlatformType linux \
+        +@sSteamCmdForcePlatformBitness "$BITS" \
+        +force_install_dir /home/${user}/cs2 \
+        +login anonymous \
+        +app_update 730 $1 \
+        +quit
+}
+
+# StateFlags 4 is FullyInstalled with nothing pending. 6 adds UpdateRequired, which
+# is where a failed update parks and where a plain +app_update short-circuits
+# ("Error! App '730' state is 0x6 after update job") without downloading a byte.
+update_ok() {
+    [ -f "$MANIFEST" ] || return 1
+    local state build target
+    state=$(acf_field StateFlags)
+    build=$(acf_field buildid)
+    target=$(acf_field TargetBuildID)
+    [ "$state" = "4" ] || return 1
+    [ -n "$build" ] || return 1
+    [ -z "$target" ] || [ "$target" = "0" ] || [ "$target" = "$build" ] || return 1
+    return 0
+}
+
+if [ "${REMOVE_APP_MANIFEST_ON_START:-false}" = "true" ]; then
+    echo "Removing appmanifest_730.acf in case it is corrupt"
+    rm -f "$MANIFEST"
 fi
 
 echo "Downloading any updates for CS2..."
-# https://developer.valvesoftware.com/wiki/Command_line_options
-sudo -u $user /steamcmd/steamcmd.sh \
-    +api_logging 1 1 \
-    +@sSteamCmdForcePlatformType linux \
-    +@sSteamCmdForcePlatformBitness "$BITS" \
-    +force_install_dir /home/${user}/cs2 \
-    +login anonymous \
-    $APP_UPDATE \
-    +quit
+if [ "${VALIDATE_ON_START:-false}" = "true" ]; then
+    run_app_update validate
+else
+    run_app_update
+fi
+
+# steamcmd exits 0 even when it leaves the app in a failed-update state, so check
+# the manifest itself and escalate rather than trusting the exit code.
+if ! update_ok; then
+    echo "WARNING: app_update left app 730 unhealthy ($(acf_state)); retrying with validate..."
+    run_app_update validate
+fi
+
+if ! update_ok; then
+    echo "WARNING: validate did not recover app 730 ($(acf_state)); removing appmanifest and retrying..."
+    rm -f "$MANIFEST"
+    run_app_update validate
+fi
+
+if ! update_ok; then
+    echo "ERROR: app 730 could not be updated ($(acf_state))."
+    echo "ERROR: refusing to launch a stale server - the watcher would just restart it"
+    echo "ERROR: every run and the update would never land. Failing loudly instead."
+    echo "ERROR: see /home/steam/Steam/logs/content_log.txt for what Steam actually refused."
+    exit 1
+fi
+
+echo "CS2 up to date at buildid $(acf_field buildid)."
 
 cd /home/${user} || exit
 

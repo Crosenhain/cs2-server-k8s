@@ -65,8 +65,44 @@ with socket.create_connection(('$1', $2), timeout=5) as s:
 }
 
 echo "🚨 [Watcher] Update available!"
+
+TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+DEPLOY_URL="https://kubernetes.default.svc/apis/apps/v1/namespaces/__NAMESPACE__/deployments/__DEPLOYMENT__"
+BUILD_ANNOTATION="cs2-watcher/last-restart-build"
+
+# A restart only helps if the pod actually picks the update up on boot. If we
+# already restarted for this exact remote build and the install is still behind,
+# the update is failing inside the pod - restarting again every run just kicks
+# players in a loop and never converges.
+LAST_RESTART_BUILD=$(curl -s -H "Authorization: Bearer $TOKEN" --cacert "$CACERT" "$DEPLOY_URL" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+print(d.get('metadata', {}).get('annotations', {}).get('$BUILD_ANNOTATION', ''))
+" 2>/dev/null)
+
+if [[ "$LAST_RESTART_BUILD" == "$REMOTE_BUILD_ID" ]]; then
+    echo "[Watcher] Already restarted for build $REMOTE_BUILD_ID, still installed at $LOCAL_BUILD_ID."
+    echo "[Watcher] The update is failing inside the pod, not for want of a restart. Not restarting again."
+    echo "[Watcher] Look for \"Error! App '730' state is 0x6\" in the server pod log, and"
+    echo "[Watcher] /home/steam/Steam/logs/content_log.txt inside the pod for the reason."
+    exit 0
+fi
+
 STATUS_OUT=$(rcon_command "$RCON_HOST" "$RCON_PORT" "$RCON_PASSWORD" "status")
-PLAYER_COUNT=$(echo "$STATUS_OUT" | grep "players" | grep -oP '\d+ humans' | grep -oP '\d+' || echo "0")
+if [[ -z "$STATUS_OUT" ]]; then
+    echo "[Watcher] No RCON reply from $RCON_HOST:$RCON_PORT - cannot tell whether anyone is playing. Deferring."
+    exit 0
+fi
+
+PLAYER_COUNT=$(echo "$STATUS_OUT" | grep -oP '\d+(?= humans)' | head -n 1)
+if [[ -z "$PLAYER_COUNT" ]]; then
+    echo "[Watcher] RCON replied but no player count could be parsed. Deferring."
+    exit 0
+fi
 echo "[Watcher] $PLAYER_COUNT players online."
 
 if [[ "$PLAYER_COUNT" -gt 0 ]]; then
@@ -75,13 +111,20 @@ if [[ "$PLAYER_COUNT" -gt 0 ]]; then
 fi
 
 echo "✅ [Watcher] Server empty. Restarting..."
-TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 DATE=$(date +%Y-%m-%dT%H:%M:%SZ)
 
-curl -s -X PATCH -H "Authorization: Bearer $TOKEN" \
+# restartedAt goes on the pod template (that is what rolls the pod); the build
+# marker goes on the Deployment's own metadata so recording it is not itself a
+# template change that would trigger a second rollout.
+HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH \
+     -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/strategic-merge-patch+json" \
      --cacert "$CACERT" \
-     -d "{\"spec\":{\"strategy\":{\"type\":\"Recreate\"},\"template\":{\"metadata\":{\"annotations\":{\"kubectl.kubernetes.io/restartedAt\":\"$DATE\"}}}}}" \
-     https://kubernetes.default.svc/apis/apps/v1/namespaces/__NAMESPACE__/deployments/__DEPLOYMENT__
-echo "[Watcher] Restarted."
+     -d "{\"metadata\":{\"annotations\":{\"$BUILD_ANNOTATION\":\"$REMOTE_BUILD_ID\"}},\"spec\":{\"strategy\":{\"type\":\"Recreate\"},\"template\":{\"metadata\":{\"annotations\":{\"kubectl.kubernetes.io/restartedAt\":\"$DATE\"}}}}}" \
+     "$DEPLOY_URL")
+
+if [[ "$HTTP_CODE" != 2?? ]]; then
+    echo "[Watcher] ERROR: restart patch failed with HTTP $HTTP_CODE."
+    exit 1
+fi
+echo "[Watcher] Restarted for build $REMOTE_BUILD_ID (HTTP $HTTP_CODE)."
