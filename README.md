@@ -67,6 +67,38 @@ one, so a restart only fetches maps that are new or have been updated on Steam.
 If Steam's API is unreachable the entrypoint keeps what is on disk rather than
 refetching everything.
 
+### The server never boots on a workshop map
+
+A CS2 dedicated server cannot start on a `workshop/<id>/<name>` path. Given one
+it loads every engine module, reaches its idle frame loop, and then sits there
+forever — no level loaded, no socket bound, no error, process still running.
+
+So `env.map` is always a stock map name and is always what the server boots.
+Workshop maps enter play through the generated mapgroup's rotation and vote. If
+you need the server to jump to a specific workshop map right after boot, set
+`env.workshopStartMap` to its publishedfileid; that becomes `+host_workshop_map`
+alongside the stock boot map. Setting `env.map` to a workshop path is not an
+error — the entrypoint boots a stock map and redirects the id to
+`+host_workshop_map`, with a warning in the log.
+
+`+host_workshop_collection` is not passed to the engine by default. Everything
+it would do has already happened by then: steamcmd has downloaded every member
+and the mapgroup is written. Steam also caps that argument at 100 items and
+fails the entire collection above it. `env.passWorkshopCollection: true` restores
+it.
+
+### Filtering the collection
+
+A Steam collection is a bookmark list, not a curated rotation — expect other
+game modes, asset packs and items named `test` or `doortest`. `env.mapFilter` is
+a POSIX ERE matched against each resolved map name; only matches enter the
+mapgroup. An arms race server wants `"^ar_"`. `env.maxMapgroupEntries` caps the
+result. Both default to off, keeping every member.
+
+The filter runs after the download loop, because a map's real name only exists
+once its VPK is on disk. A cold volume still fetches every member regardless of
+the filter.
+
 ### Startup cost
 
 Two settings will make the server re-verify or refetch its whole ~70 GB install
@@ -80,6 +112,23 @@ on every boot. Both default to off and should stay off outside of recovery:
 When an update genuinely wedges (`Error! App '730' state is 0x6`), the
 entrypoint escalates on its own: validate, then clear the pending download
 state, and only then remove the appmanifest.
+
+## Health Probes
+
+All three probes are TCP checks against the game/RCON port, tunable under
+`probes` in `values.yaml`. That port is the honest signal: the server opens it
+only once it has a level loaded, so a server that never got there fails the
+check while still looking perfectly alive to Kubernetes.
+
+They do not self-heal a bad configuration — a restart re-runs the same
+entrypoint and reproduces the same failure. What they buy is that the failure
+becomes `CrashLoopBackOff`, with Warning events, a climbing restart count and a
+`Degraded` ArgoCD app, instead of a pod sitting at `1/1 Running, 0 restarts`
+serving nobody.
+
+`probes.startup` allows 40 minutes by default, which covers a warm boot (~3 min)
+and a workshop content refresh (~11 min). A first-ever install downloads ~70 GB
+and will exceed it — set `probes.startup.enabled: false` for that one boot.
 
 ## Secret Management
 Create a secret named `cs2-secret` manually:
@@ -111,7 +160,10 @@ helm install cs2-server . -f values.yaml
 3. Override `values.yaml` in ArgoCD UI/Manifest.
 
 ## CI/CD Pipeline
-- **Lint**: Runs on Pull Requests to `templates/`, `values.yaml`, or `Chart.yaml`.
+- **Lint**: Runs on Pull Requests to `templates/`, `values.yaml`, `Chart.yaml` or
+  `scripts/`. Runs `helm lint`, plus `bash -n`/`shellcheck` on the shell scripts
+  and `py_compile` on the Python helpers — those files ship verbatim inside a
+  ConfigMap, so a syntax error there reaches the cluster.
 - **Release**: Triggered by tags (e.g., `v1.0.0`). Packages Helm chart and pushes to GHCR as an OCI artifact.
 
 ### Using the Published Chart

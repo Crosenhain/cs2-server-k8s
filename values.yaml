@@ -42,11 +42,64 @@ env:
   # When workshopCollection is set, the entrypoint resolves it to member maps,
   # writes csgo/gamemodes_server.txt, and launches with +mapgroup mapgroupName
   # (overrides mapGroup above). This is what puts workshop maps in the
-  # end-of-match vote. Leave workshopStartMap empty to boot the first member.
+  # end-of-match vote.
   mapgroupName: "mg_workshop"
+  # publishedfileid to switch to right after boot, via +host_workshop_map. The
+  # server still BOOTS on `map` (a stock map) either way - CS2 cannot boot
+  # directly onto a workshop map. Empty means boot the stock map and start the
+  # mapgroup rotation normally, which is what you usually want.
   workshopStartMap: ""
+  # POSIX ERE matched against each resolved workshop map name; only matches enter
+  # the generated mapgroup. Empty keeps everything. A Steam collection is a
+  # bookmark list, not a curated rotation - expect other game modes and items
+  # named "models", "doortest" or "test". Arms-race server: "^ar_".
+  mapFilter: ""
+  # Cap on generated mapgroup entries after filtering. 0 = uncapped.
+  maxMapgroupEntries: 0
+  # Pass +host_workshop_collection to the engine. Off by default: the chart has
+  # already pre-downloaded every member and written the mapgroup that drives the
+  # vote, and Steam caps this argument at 100 items - above that the whole
+  # collection fails to load.
+  passWorkshopCollection: false
   removeAppmanifestOnStart: false
   performValidationOnStart: false
+# TCP probes against the game/RCON port. That is the honest signal: the server
+# opens it only once it has a level loaded, and a server that never gets there
+# has a completely EMPTY /proc/net/tcp.
+# These do NOT self-heal a bad config - a restart re-runs the same entrypoint.
+# What they buy is that the failure becomes CrashLoopBackOff, with Warning events
+# and a climbing restart count, instead of a silent "1/1 Running, 0 restarts".
+probes:
+  # Covers first boot. 15s x 160 = 40 minutes. Roughly 3 min warm, ~11 min when
+  # workshop content has to download. A first-ever install pulls ~70 GB and WILL
+  # blow through this - for that one boot set enabled: false, or the kubelet
+  # kills the download and loops forever.
+  startup:
+    enabled: true
+    periodSeconds: 15
+    failureThreshold: 160
+    timeoutSeconds: 5
+  # Gates Service endpoints only. hostPort is programmed by the CNI at sandbox
+  # creation and is unaffected, so players connecting to the node keep working;
+  # what this gates is the watcher's RCON and any stats poller.
+  readiness:
+    enabled: true
+    periodSeconds: 10
+    failureThreshold: 3
+    timeoutSeconds: 3
+  # 30s x 6 = 3 minutes with no RCON listener before the container is restarted.
+  # Safe on a busy server: a TCP handshake against a listening socket is
+  # completed by the kernel from the accept backlog and does not need the game's
+  # main thread, so a frame-time spike cannot trip it. Only a process that has
+  # closed or never opened the socket fails. Suspended until startupProbe passes.
+  liveness:
+    enabled: true
+    periodSeconds: 30
+    failureThreshold: 6
+    timeoutSeconds: 5
+# Requests only, never a memory limit: OOM-killing a server mid-match to enforce
+# a guess is worse than the overcommit it prevents.
+resources: {}
 watcher:
   enabled: true
   schedule: '*/15 * * * *'

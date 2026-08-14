@@ -6,6 +6,10 @@ on:
       - 'templates/**'
       - 'values.yaml'
       - 'Chart.yaml'
+      # scripts/ is embedded verbatim into a ConfigMap by
+      # templates/configmap-install.yaml, so a syntax error there ships to the
+      # cluster and only shows up as a pod that exits instantly.
+      - 'scripts/**'
 
 jobs:
   lint:
@@ -21,3 +25,17 @@ jobs:
 
       - name: Helm Lint
         run: helm lint .
+
+      - name: Shell syntax
+        run: bash -n scripts/install_docker.sh scripts/watcher.sh
+
+      # -S error only: these scripts predate the check, so gating on style would
+      # just mean a permanently red build. Raise the severity once the backlog
+      # of warnings is cleared.
+      - name: Shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck -S error scripts/install_docker.sh scripts/watcher.sh
+
+      - name: Python syntax
+        run: python3 -m py_compile scripts/workshop.py scripts/rcon.py

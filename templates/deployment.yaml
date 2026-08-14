@@ -117,13 +117,47 @@ spec:
               value: {{.Values.env.mapgroupName | default "mg_workshop" | quote}}
             - name: WORKSHOP_START_MAP
               value: {{.Values.env.workshopStartMap | default "" | quote}}
+            - name: MAP_FILTER
+              value: {{.Values.env.mapFilter | default "" | quote}}
+            - name: MAX_MAPGROUP_ENTRIES
+              value: {{.Values.env.maxMapgroupEntries | quote}}
             # Not piped through `default`: Helm treats false as empty, so a
             # `default` here would silently ignore anyone setting these false.
             # The script's own ${VAR:-false} covers an unset value.
+            - name: PASS_WORKSHOP_COLLECTION
+              value: {{.Values.env.passWorkshopCollection | quote}}
             - name: REMOVE_APP_MANIFEST_ON_START
               value: {{.Values.env.removeAppmanifestOnStart | quote}}
             - name: VALIDATE_ON_START
               value: {{.Values.env.performValidationOnStart | quote}}
+          {{- if .Values.probes.startup.enabled}}
+          startupProbe:
+            tcpSocket:
+              port: {{.Values.service.port}}
+            periodSeconds: {{.Values.probes.startup.periodSeconds}}
+            failureThreshold: {{.Values.probes.startup.failureThreshold}}
+            timeoutSeconds: {{.Values.probes.startup.timeoutSeconds}}
+          {{- end}}
+          {{- if .Values.probes.readiness.enabled}}
+          readinessProbe:
+            tcpSocket:
+              port: {{.Values.service.port}}
+            periodSeconds: {{.Values.probes.readiness.periodSeconds}}
+            failureThreshold: {{.Values.probes.readiness.failureThreshold}}
+            timeoutSeconds: {{.Values.probes.readiness.timeoutSeconds}}
+          {{- end}}
+          {{- if .Values.probes.liveness.enabled}}
+          livenessProbe:
+            tcpSocket:
+              port: {{.Values.service.port}}
+            periodSeconds: {{.Values.probes.liveness.periodSeconds}}
+            failureThreshold: {{.Values.probes.liveness.failureThreshold}}
+            timeoutSeconds: {{.Values.probes.liveness.timeoutSeconds}}
+          {{- end}}
+          {{- with .Values.resources}}
+          resources:
+            {{- toYaml . | nindent 12}}
+          {{- end}}
           volumeMounts:
             - name: cs2-data
               mountPath: /home/steam/cs2

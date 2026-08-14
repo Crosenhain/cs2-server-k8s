@@ -235,12 +235,14 @@ chown -R ${user}:${user} /home/${user}
 # mapgroup's "maps" list in gamemodes_server.txt, NOT from the downloaded
 # workshop collection. So when a collection is set we resolve its member maps,
 # pre-download them to read their .bsp names, and write a gamemodes_server.txt
-# mapgroup listing them as workshop/<id>/<bsp> entries. This mapgroup is then
-# the source of truth for the vote; +host_workshop_collection is kept only to
-# keep the engine subscription current.
+# mapgroup listing them as workshop/<id>/<bsp> entries. This mapgroup is the
+# sole source of truth for the vote - +host_workshop_collection is NOT passed by
+# default, see PASS_WORKSHOP_COLLECTION below.
 WORKSHOP_ARGS=()
 GEN_MAP_GROUP=""
-GEN_MAP=""
+# publishedfileid of the first mapgroup member, for optional +host_workshop_map
+# use. Never a +map value - see the precedence block below.
+GEN_MAP_ID=""
 
 if [[ -n "$CS2_WORKSHOP_COLLECTION" ]]; then
     MAPGROUP_NAME="${MAPGROUP_NAME:-mg_workshop}"
@@ -251,7 +253,7 @@ if [[ -n "$CS2_WORKSHOP_COLLECTION" ]]; then
     MAP_IDS=$(python3 "$WORKSHOP_HELPER" resolve "$CS2_WORKSHOP_COLLECTION")
 
     if [[ -z "$MAP_IDS" ]]; then
-        echo "WARNING: could not resolve collection ${CS2_WORKSHOP_COLLECTION}; falling back to MAP_GROUP='${MAP_GROUP-mg_active}'"
+        echo "WARNING: could not resolve collection ${CS2_WORKSHOP_COLLECTION}; falling back to MAP_GROUP='${MAP_GROUP:-mg_active}'"
     else
         # Only fetch what is missing or out of date. The content lives on the
         # persisted volume, so handing steamcmd all ~110 members every boot is
@@ -278,6 +280,9 @@ if [[ -n "$CS2_WORKSHOP_COLLECTION" ]]; then
 
         GM_FILE="/home/${user}/cs2/game/csgo/gamemodes_server.txt"
         ENTRIES=""
+        ENTRY_COUNT=0
+        SKIPPED=0
+        MAX_ENTRIES="${MAX_MAPGROUP_ENTRIES:-0}"
         for id in $MAP_IDS; do
             # CS2 packs a workshop map as maps/<name>.vpk inside <id>.vpk (or
             # <id>_dir.vpk when it is split across archives). <name> matches
@@ -289,15 +294,43 @@ if [[ -n "$CS2_WORKSHOP_COLLECTION" ]]; then
                 echo "WARNING: no map found in workshop item ${id}; skipping"
                 continue
             fi
+            # A Steam collection is a bookmark list, not a curated rotation: it
+            # happily contains other game modes and workshop items named "test",
+            # "models" or "doortest". MAP_FILTER keeps the vote to maps this
+            # server can actually play.
+            # $MAP_FILTER is deliberately UNQUOTED: quoting the RHS of =~ makes
+            # bash match it as a literal string, not a regex.
+            if [[ -n "$MAP_FILTER" ]] && ! [[ "$map_name" =~ $MAP_FILTER ]]; then
+                echo "Filtered out ${map_name} (${id}): no match for MAP_FILTER='${MAP_FILTER}'"
+                SKIPPED=$((SKIPPED + 1))
+                continue
+            fi
+            if [[ "$MAX_ENTRIES" -gt 0 ]] && [[ "$ENTRY_COUNT" -ge "$MAX_ENTRIES" ]]; then
+                echo "WARNING: hit MAX_MAPGROUP_ENTRIES=${MAX_ENTRIES}; dropping the remainder."
+                break
+            fi
             ENTRIES+=$'\t\t\t\t"'"workshop/${id}/${map_name}"$'"\t\t""\n'
-            [[ -z "$GEN_MAP" ]] && GEN_MAP="workshop/${id}/${map_name}"
+            ENTRY_COUNT=$((ENTRY_COUNT + 1))
+            [[ -z "$GEN_MAP_ID" ]] && GEN_MAP_ID="$id"
         done
+        echo "Mapgroup ${MAPGROUP_NAME}: ${ENTRY_COUNT} kept, ${SKIPPED} filtered out of ${TOTAL_IDS}."
 
         if [[ -z "$ENTRIES" ]]; then
-            echo "WARNING: no workshop maps resolved; falling back to MAP_GROUP='${MAP_GROUP-mg_active}'"
+            echo "WARNING: no workshop maps left (MAP_FILTER='${MAP_FILTER}'); falling back to MAP_GROUP='${MAP_GROUP:-mg_active}'"
         else
-            cat > "$GM_FILE" <<EOF
-"GameModes.txt"
+            # The operator may ship their own gamemodes_server.txt in
+            # custom_files; it was copied in above and we are about to replace
+            # it wholesale, losing its gameTypes and any other mapgroups.
+            if [[ -s "$GM_FILE" ]] && ! grep -q "\"${MAPGROUP_NAME}\"" "$GM_FILE"; then
+                echo "WARNING: replacing an existing ${GM_FILE} (probably yours, from"
+                echo "WARNING: custom_files). Its gameTypes and other mapgroups are lost."
+                cp -a "$GM_FILE" "${GM_FILE}.replaced-by-chart"
+            fi
+            # Root key is GameModes_Server.txt - that is the key the engine looks
+            # for in the server override file. Written via temp + mv so a pod
+            # killed mid-write cannot leave a truncated file on the volume.
+            cat > "${GM_FILE}.tmp" <<EOF
+"GameModes_Server.txt"
 {
 	"mapgroups"
 	{
@@ -311,28 +344,73 @@ ${ENTRIES}			}
 	}
 }
 EOF
+            mv "${GM_FILE}.tmp" "$GM_FILE"
             chown ${user}:${user} "$GM_FILE"
             GEN_MAP_GROUP="$MAPGROUP_NAME"
             echo "Wrote ${GM_FILE} with mapgroup ${MAPGROUP_NAME}"
-            # Bug A fix: separate argv tokens, not one quoted string.
-            WORKSHOP_ARGS=(+host_workshop_collection "$CS2_WORKSHOP_COLLECTION")
-            # Bug B fix: derived/optional start map, not a hardcoded id.
-            if [[ -n "$WORKSHOP_START_MAP" ]]; then
-                WORKSHOP_ARGS+=(+host_workshop_map "$WORKSHOP_START_MAP")
+            # +host_workshop_collection is NOT passed by default. steamcmd above
+            # has already downloaded every member and we have just written the
+            # mapgroup that drives the vote. Steam caps this argument at 100
+            # items and fails the whole collection above that, so on a large
+            # collection it cannot do its job anyway.
+            if [[ "${PASS_WORKSHOP_COLLECTION:-false}" == "true" ]]; then
+                if [[ "$TOTAL_IDS" -gt 100 ]]; then
+                    echo "WARNING: collection ${CS2_WORKSHOP_COLLECTION} has ${TOTAL_IDS} members;"
+                    echo "WARNING: Steam caps +host_workshop_collection at 100 and fails above it."
+                fi
+                # Separate argv tokens, not one quoted string.
+                WORKSHOP_ARGS=(+host_workshop_collection "$CS2_WORKSHOP_COLLECTION")
             fi
         fi
     fi
 fi
 
-# Generated mapgroup wins; otherwise fall back to the env-provided mapgroup.
-EFFECTIVE_MAP_GROUP="${GEN_MAP_GROUP:-${MAP_GROUP-mg_active}}"
-# Boot map: an explicit workshop/<id>/<bsp> in MAP pins the start map; else the
-# first resolved collection member; else the env MAP; else de_dust2.
+# Generated mapgroup wins; otherwise the env-provided one. ':-' not '-': the
+# Deployment always sets these vars, so an EMPTY value must take the default too.
+EFFECTIVE_MAP_GROUP="${GEN_MAP_GROUP:-${MAP_GROUP:-mg_active}}"
+
+# Boot map is ALWAYS a stock map. A CS2 dedicated server cannot boot onto a
+# workshop/<id>/<name> path: it loads every engine module, reaches the idle frame
+# loop, and never loads a level or binds a socket - the process stays up and
+# looks healthy forever.
+# ValveSoftware/csgo-osx-linux#3529; CubeCoders: "you have to start the server on
+# a default map and then switch later. CS2 bug".
+BOOT_MAP_DEFAULT="de_dust2"
+
 if [[ "$MAP" == workshop/* ]]; then
+    REQ_ID="${MAP#workshop/}"; REQ_ID="${REQ_ID%%/*}"
+    echo "WARNING: MAP='${MAP}' is a workshop path and CS2 cannot boot on one."
+    echo "WARNING: booting ${BOOT_MAP_DEFAULT}, switching via +host_workshop_map ${REQ_ID}."
+    EFFECTIVE_MAP="$BOOT_MAP_DEFAULT"
+    WORKSHOP_START_MAP="${WORKSHOP_START_MAP:-$REQ_ID}"
+elif [[ -n "$MAP" ]]; then
     EFFECTIVE_MAP="$MAP"
 else
-    EFFECTIVE_MAP="${GEN_MAP:-${MAP-de_dust2}}"
+    EFFECTIVE_MAP="$BOOT_MAP_DEFAULT"
 fi
+
+# +host_workshop_map takes a publishedfileid, not a path. Accept either form.
+# Opt-in only: GEN_MAP_ID is deliberately not an implicit default, because this
+# pins the server to one item rather than starting the mapgroup rotation.
+if [[ -n "$WORKSHOP_START_MAP" ]]; then
+    START_ID="$WORKSHOP_START_MAP"
+    if [[ "$START_ID" == workshop/* ]]; then
+        START_ID="${START_ID#workshop/}"; START_ID="${START_ID%%/*}"
+    fi
+    if [[ "$START_ID" =~ ^[0-9]+$ ]]; then
+        WORKSHOP_ARGS+=(+host_workshop_map "$START_ID")
+    else
+        echo "WARNING: WORKSHOP_START_MAP='${WORKSHOP_START_MAP}' is not a publishedfileid; ignoring."
+    fi
+fi
+
+if [[ -d "/home/${user}/cs2/game/csgo/maps" ]] &&
+   [[ ! -f "/home/${user}/cs2/game/csgo/maps/${EFFECTIVE_MAP}.vpk" ]]; then
+    echo "WARNING: boot map '${EFFECTIVE_MAP}' is not in game/csgo/maps/."
+    echo "WARNING: if the server never finishes booting, this is why."
+fi
+
+echo "Boot map: ${EFFECTIVE_MAP}   mapgroup: ${EFFECTIVE_MAP_GROUP}"
 # --- end workshop generation ---------------------------------------------------
 
 cd /home/${user}/cs2 || exit
@@ -355,8 +433,8 @@ CS2_ARGS+=(
     +sv_visiblemaxplayers "$MAXPLAYERS"
     -authkey "$API_KEY"
     +sv_setsteamaccount "$STEAM_ACCOUNT"
-    +game_type "${GAME_TYPE-0}"
-    +game_mode "${GAME_MODE-0}"
+    +game_type "${GAME_TYPE:-0}"
+    +game_mode "${GAME_MODE:-0}"
     +mapgroup "$EFFECTIVE_MAP_GROUP"
     +sv_lan "$LAN"
     +sv_password "$SERVER_PASSWORD"
@@ -365,6 +443,29 @@ CS2_ARGS+=(
     +exec "$EXEC"
 )
 
-echo ./game/bin/linuxsteamrt64/cs2 "${CS2_ARGS[@]}"
+# Print the launch line with secret-bearing values masked. The array handed to
+# the binary below is untouched. Set-ness is still shown, because "is the rcon
+# password actually empty" is a question you will want answered from a log.
+# NOTE: the engine prints its own copy of the command line, and its "protected
+# command line arguments" redaction covers only sv_password and rcon_password -
+# -authkey and +sv_setsteamaccount still appear there in cleartext.
+REDACT_NEXT=0
+SAFE_ARGS=()
+for arg in "${CS2_ARGS[@]}"; do
+    if [[ "$REDACT_NEXT" -eq 1 ]]; then
+        if [[ -n "$arg" ]]; then
+            SAFE_ARGS+=("<redacted:set>")
+        else
+            SAFE_ARGS+=("<redacted:empty>")
+        fi
+        REDACT_NEXT=0
+        continue
+    fi
+    case "$arg" in
+        -authkey|+sv_setsteamaccount|+sv_password|+rcon_password) REDACT_NEXT=1 ;;
+    esac
+    SAFE_ARGS+=("$arg")
+done
+echo ./game/bin/linuxsteamrt64/cs2 "${SAFE_ARGS[@]}"
 sudo -u $user ./game/bin/linuxsteamrt64/cs2 "${CS2_ARGS[@]}"
 
