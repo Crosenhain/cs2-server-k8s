@@ -117,10 +117,13 @@ spec:
               value: {{.Values.env.mapgroupName | default "mg_workshop" | quote}}
             - name: WORKSHOP_START_MAP
               value: {{.Values.env.workshopStartMap | default "" | quote}}
+            # Not piped through `default`: Helm treats false as empty, so a
+            # `default` here would silently ignore anyone setting these false.
+            # The script's own ${VAR:-false} covers an unset value.
             - name: REMOVE_APP_MANIFEST_ON_START
-              value: {{.Values.env.removeAppmanifestOnStart | default "false" | quote}}
+              value: {{.Values.env.removeAppmanifestOnStart | quote}}
             - name: VALIDATE_ON_START
-              value: {{.Values.env.performValidationOnStart | default "false" | quote}}
+              value: {{.Values.env.performValidationOnStart | quote}}
           volumeMounts:
             - name: cs2-data
               mountPath: /home/steam/cs2
@@ -129,6 +132,11 @@ spec:
             - name: install-script
               mountPath: /home/cs2-modded-server/install_docker.sh
               subPath: install_docker.sh
+            # install_docker.sh resolves this by its own dirname, so it has to
+            # land beside it.
+            - name: install-script
+              mountPath: /home/cs2-modded-server/workshop.py
+              subPath: workshop.py
       volumes:
         - name: cs2-data
           hostPath:

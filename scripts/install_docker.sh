@@ -176,8 +176,21 @@ if ! update_ok; then
     run_app_update validate
 fi
 
+# State 0x6 with a TargetBuildID set is usually a half-applied update parked in
+# steamapps/downloading. Clearing just that lets the next app_update restart the
+# download and keep the ~70 GB already installed. Do this before the manifest
+# nuke below, which discards Steam's whole idea of what is on disk and costs a
+# full verify plus refetch of the entire install.
 if ! update_ok; then
-    echo "WARNING: validate did not recover app 730 ($(acf_state)); removing appmanifest and retrying..."
+    echo "WARNING: validate did not recover app 730 ($(acf_state)); clearing pending download state..."
+    rm -rf "/home/${user}/cs2/steamapps/downloading/730" \
+           "/home/${user}/cs2/steamapps/temp"
+    run_app_update
+fi
+
+if ! update_ok; then
+    echo "WARNING: app 730 still unhealthy ($(acf_state)); removing appmanifest and retrying..."
+    echo "WARNING: this forces a full verify and refetch of the whole install."
     rm -f "$MANIFEST"
     run_app_update validate
 fi
@@ -231,53 +244,57 @@ GEN_MAP=""
 
 if [[ -n "$CS2_WORKSHOP_COLLECTION" ]]; then
     MAPGROUP_NAME="${MAPGROUP_NAME:-mg_workshop}"
+    WORKSHOP_CONTENT="/home/${user}/cs2/steamapps/workshop/content/730"
+    WORKSHOP_HELPER="$(cd "$(dirname "$0")" && pwd)/workshop.py"
     echo "Resolving workshop collection ${CS2_WORKSHOP_COLLECTION} -> map ids..."
 
-    COLLECTION_JSON=$(curl -s \
-        "https://api.steampowered.com/ISteamRemoteStorage/GetCollectionDetails/v1/" \
-        -d collectioncount=1 \
-        -d "publishedfileids[0]=${CS2_WORKSHOP_COLLECTION}")
-
-    # Extract child publishedfileids (jq -> python3 -> grep fallback)
-    if command -v jq >/dev/null 2>&1; then
-        MAP_IDS=$(echo "$COLLECTION_JSON" | jq -r \
-            '.response.collectiondetails[0].children[]?.publishedfileid')
-    elif command -v python3 >/dev/null 2>&1; then
-        MAP_IDS=$(echo "$COLLECTION_JSON" | python3 -c \
-            'import sys,json;d=json.load(sys.stdin);print("\n".join(c["publishedfileid"] for c in d["response"]["collectiondetails"][0].get("children",[])))')
-    else
-        # Fallback: first "publishedfileid" is the collection itself, drop it.
-        MAP_IDS=$(echo "$COLLECTION_JSON" | grep -o '"publishedfileid":"[0-9]*"' \
-            | grep -o '[0-9]*' | tail -n +2)
-    fi
+    MAP_IDS=$(python3 "$WORKSHOP_HELPER" resolve "$CS2_WORKSHOP_COLLECTION")
 
     if [[ -z "$MAP_IDS" ]]; then
         echo "WARNING: could not resolve collection ${CS2_WORKSHOP_COLLECTION}; falling back to MAP_GROUP='${MAP_GROUP-mg_active}'"
     else
-        # Pre-download each member so its .bsp is on disk for name derivation
-        # (the engine otherwise only fetches at runtime, too late for config-gen).
-        DL_ARGS=(+force_install_dir "/home/${user}/cs2" +login anonymous)
-        for id in $MAP_IDS; do
-            DL_ARGS+=(+workshop_download_item 730 "$id")
-        done
-        DL_ARGS+=(+quit)
-        echo "Downloading ${CS2_WORKSHOP_COLLECTION} member maps..."
-        sudo -u "$user" /steamcmd/steamcmd.sh "${DL_ARGS[@]}"
+        # Only fetch what is missing or out of date. The content lives on the
+        # persisted volume, so handing steamcmd all ~110 members every boot is
+        # both slow and pointless - it re-checks each one against Steam even
+        # when nothing has changed.
+        # shellcheck disable=SC2086
+        NEED_IDS=$(python3 "$WORKSHOP_HELPER" stale "$WORKSHOP_CONTENT" $MAP_IDS)
+        TOTAL_IDS=$(echo "$MAP_IDS" | grep -c .)
+        if [[ -z "$NEED_IDS" ]]; then
+            echo "All ${TOTAL_IDS} collection maps already current; skipping workshop download."
+        else
+            NEED_COUNT=$(echo "$NEED_IDS" | grep -c .)
+            echo "Downloading ${NEED_COUNT} of ${TOTAL_IDS} collection maps (rest already current)..."
+            DL_START=$(date +%s)
+            DL_ARGS=(+force_install_dir "/home/${user}/cs2" +login anonymous)
+            for id in $NEED_IDS; do
+                DL_ARGS+=(+workshop_download_item 730 "$id")
+            done
+            DL_ARGS+=(+quit)
+            sudo -u "$user" /steamcmd/steamcmd.sh "${DL_ARGS[@]}"
+            # shellcheck disable=SC2086
+            sudo -u "$user" python3 "$WORKSHOP_HELPER" stamp "$WORKSHOP_CONTENT" "$DL_START" $NEED_IDS
+        fi
 
         GM_FILE="/home/${user}/cs2/game/csgo/gamemodes_server.txt"
         ENTRIES=""
         for id in $MAP_IDS; do
-            bsp=$(basename "$(ls /home/${user}/cs2/steamapps/workshop/content/730/${id}/*.bsp 2>/dev/null | head -n1)" .bsp 2>/dev/null)
-            if [[ -z "$bsp" ]]; then
-                echo "WARNING: no .bsp found for workshop item ${id}; skipping"
+            # CS2 packs a workshop map as maps/<name>.vpk inside <id>.vpk (or
+            # <id>_dir.vpk when it is split across archives). <name> matches
+            # neither the item id nor publish_data.txt's source_folder - item
+            # 3071818846 is "kitchoon" there but de_rats_kitchoon in the vpk -
+            # so read it out of the vpk directory tree.
+            map_name=$(python3 "$WORKSHOP_HELPER" mapname "$WORKSHOP_CONTENT" "$id")
+            if [[ -z "$map_name" ]]; then
+                echo "WARNING: no map found in workshop item ${id}; skipping"
                 continue
             fi
-            ENTRIES+=$'\t\t\t\t"'"workshop/${id}/${bsp}"$'"\t\t""\n'
-            [[ -z "$GEN_MAP" ]] && GEN_MAP="workshop/${id}/${bsp}"
+            ENTRIES+=$'\t\t\t\t"'"workshop/${id}/${map_name}"$'"\t\t""\n'
+            [[ -z "$GEN_MAP" ]] && GEN_MAP="workshop/${id}/${map_name}"
         done
 
         if [[ -z "$ENTRIES" ]]; then
-            echo "WARNING: no workshop maps resolved to .bsp; falling back to MAP_GROUP='${MAP_GROUP-mg_active}'"
+            echo "WARNING: no workshop maps resolved; falling back to MAP_GROUP='${MAP_GROUP-mg_active}'"
         else
             cat > "$GM_FILE" <<EOF
 "GameModes.txt"
