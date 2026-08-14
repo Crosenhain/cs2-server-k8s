@@ -23,5 +23,9 @@
 *.tmproj
 *.esproj
 
+# Python bytecode from running scripts/rcon.py locally
+__pycache__/
+*.pyc
+
 legacy/
 README.md

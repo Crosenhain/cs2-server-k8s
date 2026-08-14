@@ -1,9 +1,15 @@
 #!/bin/bash
 # Indented 8 spaces to be safe
-RCON_HOST=${RCON_HOST:-"cs2-service"}
-RCON_PORT=${CS2_PORT:-"27015"}
-RCON_PASSWORD=${CS2_RCONPW}
-SERVER_DIR="/home/steam/cs2"
+export RCON_HOST=${RCON_HOST:-"cs2-service"}
+export RCON_PORT=${RCON_PORT:-${CS2_PORT:-27015}}
+export RCON_PASSWORD=${RCON_PASSWORD}
+BLIND_RESTART_AFTER=${WATCHER_BLIND_RESTART_AFTER:-4}
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# Overridable so the script can be exercised outside the pod; the defaults are
+# what it always uses in-cluster.
+SERVER_DIR=${SERVER_DIR:-"/home/steam/cs2"}
+SA_DIR=${SA_DIR:-"/var/run/secrets/kubernetes.io/serviceaccount"}
+KUBE_API=${KUBE_API:-"https://kubernetes.default.svc"}
 CS2_APPID=730
 
 echo "[Watcher] Starting check..."
@@ -45,45 +51,67 @@ if [[ "$LOCAL_BUILD_ID" == "$REMOTE_BUILD_ID" ]]; then
     exit 0
 fi
 
-rcon_command() {
-    python3 -c "
-import socket, struct
-def sp(s, t, i, b):
-    m = b.encode('ascii') + b'\x00\x00'
-    s.send(struct.pack('<iii', len(m)+10, i, t) + m)
-def gr(s):
-    d = s.recv(4)
-    if not d: return None
-    return s.recv(struct.unpack('<i', d)[0])
-with socket.create_connection(('$1', $2), timeout=5) as s:
-    sp(s, 3, 1, '$3')
-    gr(s)
-    sp(s, 2, 2, '$4')
-    r = gr(s)
-    if r: print(r[8:-2].decode('ascii', 'ignore'))
-" 2>/dev/null
-}
-
 echo "🚨 [Watcher] Update available!"
 
-TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-DEPLOY_URL="https://kubernetes.default.svc/apis/apps/v1/namespaces/__NAMESPACE__/deployments/__DEPLOYMENT__"
+TOKEN=$(cat "$SA_DIR/token")
+CACERT="$SA_DIR/ca.crt"
+DEPLOY_URL="$KUBE_API/apis/apps/v1/namespaces/__NAMESPACE__/deployments/__DEPLOYMENT__"
 BUILD_ANNOTATION="cs2-watcher/last-restart-build"
+FAIL_ANNOTATION="cs2-watcher/rcon-fail-count"
+
+# Both markers live on the Deployment's own metadata, not the pod template, so
+# writing them is not itself a template change that would trigger a rollout.
+patch_deployment() {
+    curl -s -o /dev/null -w '%{http_code}' -X PATCH \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/strategic-merge-patch+json" \
+        --cacert "$CACERT" \
+        -d "$1" \
+        "$DEPLOY_URL"
+}
+
+set_fail_count() {
+    local code
+    code=$(patch_deployment "{\"metadata\":{\"annotations\":{\"$FAIL_ANNOTATION\":\"$1\"}}}")
+    if [[ "$code" != 2?? ]]; then
+        echo "[Watcher] WARNING: could not record RCON failure count (HTTP $code)."
+    fi
+}
+
+# restartedAt goes on the pod template - that is what actually rolls the pod.
+# The build marker and the reset fail count ride along on the Deployment's own
+# metadata in the same request.
+restart_server() {
+    local date code
+    date=$(date +%Y-%m-%dT%H:%M:%SZ)
+    code=$(patch_deployment "{\"metadata\":{\"annotations\":{\"$BUILD_ANNOTATION\":\"$REMOTE_BUILD_ID\",\"$FAIL_ANNOTATION\":\"0\"}},\"spec\":{\"strategy\":{\"type\":\"Recreate\"},\"template\":{\"metadata\":{\"annotations\":{\"kubectl.kubernetes.io/restartedAt\":\"$date\"}}}}}")
+    if [[ "$code" != 2?? ]]; then
+        echo "[Watcher] ERROR: restart patch failed with HTTP $code."
+        return 1
+    fi
+    echo "[Watcher] Restarted for build $REMOTE_BUILD_ID (HTTP $code)."
+    return 0
+}
+
+# One GET for both annotations.
+ANNOTATIONS=$(curl -s -H "Authorization: Bearer $TOKEN" --cacert "$CACERT" "$DEPLOY_URL" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    a = d.get('metadata', {}).get('annotations', {}) or {}
+except Exception:
+    a = {}
+print(a.get('$BUILD_ANNOTATION', ''))
+print(a.get('$FAIL_ANNOTATION', '0') or '0')
+" 2>/dev/null)
+LAST_RESTART_BUILD=$(printf '%s\n' "$ANNOTATIONS" | head -n 1)
+RCON_FAIL_COUNT=$(printf '%s\n' "$ANNOTATIONS" | head -n 2 | tail -n 1)
+[[ "$RCON_FAIL_COUNT" =~ ^[0-9]+$ ]] || RCON_FAIL_COUNT=0
 
 # A restart only helps if the pod actually picks the update up on boot. If we
 # already restarted for this exact remote build and the install is still behind,
 # the update is failing inside the pod - restarting again every run just kicks
 # players in a loop and never converges.
-LAST_RESTART_BUILD=$(curl -s -H "Authorization: Bearer $TOKEN" --cacert "$CACERT" "$DEPLOY_URL" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-print(d.get('metadata', {}).get('annotations', {}).get('$BUILD_ANNOTATION', ''))
-" 2>/dev/null)
-
 if [[ "$LAST_RESTART_BUILD" == "$REMOTE_BUILD_ID" ]]; then
     echo "[Watcher] Already restarted for build $REMOTE_BUILD_ID, still installed at $LOCAL_BUILD_ID."
     echo "[Watcher] The update is failing inside the pod, not for want of a restart. Not restarting again."
@@ -92,15 +120,50 @@ if [[ "$LAST_RESTART_BUILD" == "$REMOTE_BUILD_ID" ]]; then
     exit 0
 fi
 
-STATUS_OUT=$(rcon_command "$RCON_HOST" "$RCON_PORT" "$RCON_PASSWORD" "status")
-if [[ -z "$STATUS_OUT" ]]; then
-    echo "[Watcher] No RCON reply from $RCON_HOST:$RCON_PORT - cannot tell whether anyone is playing. Deferring."
+RCON_ERR=$(mktemp)
+STATUS_OUT=$(python3 "$SCRIPT_DIR/rcon.py" status 2>"$RCON_ERR")
+RCON_RC=$?
+
+if [[ "$RCON_RC" -ne 0 ]]; then
+    case "$RCON_RC" in
+        2) REASON="auth rejected" ;;
+        3) REASON="unreachable" ;;
+        4) REASON="timed out" ;;
+        *) REASON="failed (exit $RCON_RC)" ;;
+    esac
+    echo "[Watcher] RCON $REASON at $RCON_HOST:$RCON_PORT - $(head -n 1 "$RCON_ERR")"
+    rm -f "$RCON_ERR"
+
+    NEW_FAIL_COUNT=$((RCON_FAIL_COUNT + 1))
+    if [[ "$BLIND_RESTART_AFTER" -le 0 ]]; then
+        echo "[Watcher] Blind restart disabled. Cannot tell whether anyone is playing. Deferring."
+        set_fail_count "$NEW_FAIL_COUNT"
+        exit 0
+    fi
+
+    if [[ "$NEW_FAIL_COUNT" -lt "$BLIND_RESTART_AFTER" ]]; then
+        echo "[Watcher] Cannot tell whether anyone is playing. Deferring (RCON failure $NEW_FAIL_COUNT/$BLIND_RESTART_AFTER)."
+        set_fail_count "$NEW_FAIL_COUNT"
+        exit 0
+    fi
+
+    echo "[Watcher] RCON has failed $NEW_FAIL_COUNT runs in a row; restarting blind."
+    restart_server || exit 1
     exit 0
 fi
+rm -f "$RCON_ERR"
 
-PLAYER_COUNT=$(echo "$STATUS_OUT" | grep -oP '\d+(?= humans)' | head -n 1)
+if [[ "$RCON_FAIL_COUNT" -ne 0 ]]; then
+    set_fail_count 0
+fi
+
+PLAYER_COUNT=$(printf '%s\n' "$STATUS_OUT" | grep -oP '\d+(?= humans)' | head -n 1)
 if [[ -z "$PLAYER_COUNT" ]]; then
+    # RCON works, so this is a parser problem, not an unreachable server - do not
+    # count it towards a blind restart. Dump enough of the reply to fix the regex.
     echo "[Watcher] RCON replied but no player count could be parsed. Deferring."
+    echo "[Watcher] Raw status (first 15 lines):"
+    printf '%s\n' "$STATUS_OUT" | head -n 15
     exit 0
 fi
 echo "[Watcher] $PLAYER_COUNT players online."
@@ -111,20 +174,4 @@ if [[ "$PLAYER_COUNT" -gt 0 ]]; then
 fi
 
 echo "✅ [Watcher] Server empty. Restarting..."
-DATE=$(date +%Y-%m-%dT%H:%M:%SZ)
-
-# restartedAt goes on the pod template (that is what rolls the pod); the build
-# marker goes on the Deployment's own metadata so recording it is not itself a
-# template change that would trigger a second rollout.
-HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH \
-     -H "Authorization: Bearer $TOKEN" \
-     -H "Content-Type: application/strategic-merge-patch+json" \
-     --cacert "$CACERT" \
-     -d "{\"metadata\":{\"annotations\":{\"$BUILD_ANNOTATION\":\"$REMOTE_BUILD_ID\"}},\"spec\":{\"strategy\":{\"type\":\"Recreate\"},\"template\":{\"metadata\":{\"annotations\":{\"kubectl.kubernetes.io/restartedAt\":\"$DATE\"}}}}}" \
-     "$DEPLOY_URL")
-
-if [[ "$HTTP_CODE" != 2?? ]]; then
-    echo "[Watcher] ERROR: restart patch failed with HTTP $HTTP_CODE."
-    exit 1
-fi
-echo "[Watcher] Restarted for build $REMOTE_BUILD_ID (HTTP $HTTP_CODE)."
+restart_server || exit 1
