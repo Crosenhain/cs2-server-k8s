@@ -25,6 +25,34 @@ Reusable Helm chart for deploying a Counter-Strike 2 dedicated server on Kuberne
 | `nodeSelector` | Pin pod to specific node | `{}` |
 | `watcher.enabled` | Enable update checker | `true` |
 | `watcher.schedule` | Cron schedule for update check | `*/15 * * * *` |
+| `watcher.blindRestartAfterFailures` | Consecutive unreachable-RCON runs before restarting without a player count (`0` disables) | `4` |
+
+## Update Watcher
+
+The CronJob compares the installed build id against Steam's. When they differ it
+asks the server over RCON how many humans are connected and only restarts an
+empty server.
+
+If RCON cannot be reached it defers and records a counter on the Deployment
+(`cs2-watcher/rcon-fail-count`). After `watcher.blindRestartAfterFailures`
+consecutive failures it restarts anyway, so a broken RCON does not mean the
+server silently stops updating forever. Set the value to `0` to never restart
+without a confirmed player count.
+
+It also records `cs2-watcher/last-restart-build`. If it already restarted for a
+given build and the install is still behind, the update is failing inside the
+pod and it stops restarting rather than kicking players in a loop — check the
+server pod log for `Error! App '730' state is 0x6` and
+`/home/steam/Steam/logs/content_log.txt`.
+
+### RCON ban penalty
+
+CS2 bans an address for `sv_rcon_banpenalty` minutes after `sv_rcon_maxfailures`
+bad auth attempts (default 10). If the watcher has been failing to authenticate,
+the running server may still refuse it after a fix until the server pod is
+restarted once. Because watcher pod IPs are ephemeral, per-address banning buys
+nothing here — `sv_rcon_maxfailures 0` in your `custom_files` boot config
+disables it.
 
 ## Secret Management
 Create a secret named `cs2-secret` manually:

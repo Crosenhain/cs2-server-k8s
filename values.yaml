@@ -50,6 +50,11 @@ env:
 watcher:
   enabled: true
   schedule: '*/15 * * * *'
+  # Consecutive runs with an unreachable RCON before the watcher restarts
+  # without a confirmed player count. 0 disables blind restarts, so a broken
+  # RCON means the server never auto-updates again. 4 is ~1h on the schedule
+  # above.
+  blindRestartAfterFailures: 4
   image:
     repository: ghcr.io/kus/cs2-modded-server
     tag: latest

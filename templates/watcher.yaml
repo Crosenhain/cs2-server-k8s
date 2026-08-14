@@ -31,7 +31,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: {{include "cs2-server.fullname" .}}-watcher
-    namespace: {{.Release.Namespace}}
+    namespace: {{.Values.namespace}}
 roleRef:
   kind: Role
   name: {{include "cs2-server.fullname" .}}-watcher-role
@@ -46,7 +46,9 @@ metadata:
   namespace: {{.Values.namespace}}
 data:
   watcher.sh: |
-{{.Files.Get "scripts/watcher.sh" | indent 4 | replace "cs2-service" (include "cs2-server.fullname" .) | replace "__NAMESPACE__" .Release.Namespace | replace "__DEPLOYMENT__" (include "cs2-server.fullname" .)}}
+{{.Files.Get "scripts/watcher.sh" | indent 4 | replace "cs2-service" (include "cs2-server.fullname" .) | replace "__NAMESPACE__" .Values.namespace | replace "__DEPLOYMENT__" (include "cs2-server.fullname" .)}}
+  rcon.py: |
+{{.Files.Get "scripts/rcon.py" | indent 4}}
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -73,15 +75,22 @@ spec:
               image: "{{.Values.watcher.image.repository}}:{{.Values.watcher.image.tag | default .Chart.AppVersion}}"
               command: ["/bin/bash", "/scripts/watcher.sh"]
               env:
-                - name: CS2_RCONPW
+                - name: RCON_PASSWORD
                   valueFrom:
                     secretKeyRef:
                       name: {{.Values.secrets.existingSecret
                         | default (printf "%s-secret" (
                         include "cs2-server.fullname" .))}}
                       key: RCON_PASSWORD
-                - name: CS2_PORT
+                - name: RCON_HOST
+                  value: {{printf "%s.%s.svc.cluster.local"
+                    (include "cs2-server.fullname" .) .Values.namespace | quote}}
+                - name: RCON_PORT
                   value: {{.Values.service.port | quote}}
+                # Not piped through `default`: Helm treats 0 as empty, which
+                # would silently turn "never restart blind" into 4.
+                - name: WATCHER_BLIND_RESTART_AFTER
+                  value: {{.Values.watcher.blindRestartAfterFailures | quote}}
               volumeMounts:
                 - name: scripts
                   mountPath: /scripts
