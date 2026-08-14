@@ -54,6 +54,33 @@ restarted once. Because watcher pod IPs are ephemeral, per-address banning buys
 nothing here — `sv_rcon_maxfailures 0` in your `custom_files` boot config
 disables it.
 
+## Workshop Collections
+
+Set `env.workshopCollection` and the entrypoint resolves the collection to its
+member maps, reads each map's real name out of its VPK, and writes a
+`gamemodes_server.txt` mapgroup listing them. That mapgroup — not the collection
+subscription — is what populates the end-of-match vote.
+
+Downloads are incremental. Member maps live on the persisted data volume, and
+`steamapps/workshop/.cs2_workshop_state.json` records the `time_updated` of each
+one, so a restart only fetches maps that are new or have been updated on Steam.
+If Steam's API is unreachable the entrypoint keeps what is on disk rather than
+refetching everything.
+
+### Startup cost
+
+Two settings will make the server re-verify or refetch its whole ~70 GB install
+on every boot. Both default to off and should stay off outside of recovery:
+
+- `env.performValidationOnStart` — runs `app_update 730 validate`, re-hashing
+  the entire install each boot.
+- `env.removeAppmanifestOnStart` — deletes Steam's record of what is installed,
+  forcing a full verify and refetch.
+
+When an update genuinely wedges (`Error! App '730' state is 0x6`), the
+entrypoint escalates on its own: validate, then clear the pending download
+state, and only then remove the appmanifest.
+
 ## Secret Management
 Create a secret named `cs2-secret` manually:
 ```yaml

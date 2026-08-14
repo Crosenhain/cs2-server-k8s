@@ -9,3 +9,5 @@ metadata:
 data:
   install_docker.sh: |
 {{.Files.Get "scripts/install_docker.sh" | indent 4}}
+  workshop.py: |
+{{.Files.Get "scripts/workshop.py" | indent 4}}

@@ -46,7 +46,7 @@ metadata:
   namespace: {{.Values.namespace}}
 data:
   watcher.sh: |
-{{.Files.Get "scripts/watcher.sh" | indent 4 | replace "cs2-service" (include "cs2-server.fullname" .) | replace "__NAMESPACE__" .Values.namespace | replace "__DEPLOYMENT__" (include "cs2-server.fullname" .)}}
+{{.Files.Get "scripts/watcher.sh" | indent 4 | replace "__NAMESPACE__" .Values.namespace | replace "__DEPLOYMENT__" (include "cs2-server.fullname" .)}}
   rcon.py: |
 {{.Files.Get "scripts/rcon.py" | indent 4}}
 ---
